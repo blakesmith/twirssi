@@ -272,7 +272,7 @@ sub cmd_timeline {
 
     foreach my $t ( reverse @$tweets ) {
         my $text = decode_entities( $t->{text} );
-        $text = "[%B\@$t->{user}->{name}%n] $text\n";
+        $text = "[%B\@$t->{user}->{screen_name}%n] $text\n";
         chomp $text;
         $window->print( $text, MSGLEVEL_PUBLIC );
     }
@@ -920,9 +920,12 @@ sub sig_complete {
 
     # /tweet, /tweet_as, /dm, /dm_as - complete @nicks (and nicks as the first
     # arg to dm)
-    if ( $linestart =~ /^\/(?:tweet|dm)/ ) {
+    if ( $linestart =~ /^\/(?:tweet|dm|twitter_timeline)/ ) {
         my $prefix = $word =~ s/^@//;
-        $prefix = 0 if $linestart eq '/dm' or $linestart eq '/dm_as';
+        my @strip_linestarts = ('/dm', '/dm_as', '/twitter_timeline'); #commands that need the @ stripped out.
+        foreach ( @strip_linestarts ) {
+            $prefix = 0 if $linestart eq $_;
+        }
         push @$complist, grep /^\Q$word/i,
           sort { $nicks{$b} <=> $nicks{$a} } keys %nicks;
         @$complist = map { "\@$_" } @$complist if $prefix;
