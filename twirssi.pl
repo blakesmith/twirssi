@@ -261,7 +261,6 @@ sub cmd_timeline {
         return;
     }
     my $tweets;
-    my @lines;
 
     $tweets = $twit->user_timeline({id => $data});
     unless ($tweets) {
@@ -271,13 +270,10 @@ sub cmd_timeline {
 
     foreach my $t ( reverse @$tweets ) {
         my $text = decode_entities( $t->{text} );
-	push @lines, "[%B\@$t->{user}->{name}%n] $text\n",;
+	$text = "[%B\@$t->{user}->{name}%n] $text\n";
+	chomp $text;
+	$window->print( $text, MSGLEVEL_PUBLIC );
     }
-
-    foreach my $line (@lines) {
-	chomp $line;
-	$window->print( $line, MSGLEVEL_PUBLIC );
-	}
 }
 
 sub gen_cmd {
