@@ -250,6 +250,36 @@ sub cmd_reply_as {
     &notice( "Update sent" . ( $away ? " (and away msg set)" : "" ) );
 }
 
+sub cmd_timeline {
+    my ( $data, $server, $win ) = @_;
+
+    return unless &logged_in($twit);
+
+    $data =~ s/^\s+|\s+$//;
+    unless ($data) {
+        &notice("Usage: /twitter_timeline <nick>");
+        return;
+    }
+    my $tweets;
+    my @lines;
+
+    $tweets = $twit->user_timeline({id => $data});
+    unless ($tweets) {
+	    &notice("Unable to access $data" . "'s timeline.");
+	    return;
+    }
+
+    foreach my $t ( reverse @$tweets ) {
+        my $text = decode_entities( $t->{text} );
+	push @lines, "[%B\@$t->{user}->{name}%n] $text\n",;
+    }
+
+    foreach my $line (@lines) {
+	chomp $line;
+	$window->print( $line, MSGLEVEL_PUBLIC );
+	}
+}
+
 sub gen_cmd {
     my ( $usage_str, $api_name, $post_ref ) = @_;
 
@@ -926,6 +956,7 @@ if ($window) {
     Irssi::command_bind( "tweet_as",         "cmd_tweet_as" );
     Irssi::command_bind( "twitter_reply",    "cmd_reply" );
     Irssi::command_bind( "twitter_reply_as", "cmd_reply_as" );
+    Irssi::command_bind( "twitter_timeline", "cmd_timeline" );
     Irssi::command_bind( "twitter_login",    "cmd_login" );
     Irssi::command_bind( "twitter_logout",   "cmd_logout" );
     Irssi::command_bind( "twitter_switch",   "cmd_switch" );
