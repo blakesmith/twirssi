@@ -262,17 +262,19 @@ sub cmd_timeline {
     }
     my $tweets;
 
-    $tweets = $twit->user_timeline({id => $data});
-    unless ($tweets) {
-	    &notice("Unable to access $data" . "'s timeline.");
-	    return;
-    }
+    eval {
+        $tweets = $twit->user_timeline({id => $data});
+        unless ($tweets) {
+            &notice("Unable to access $data" . "'s timeline.");
+            return;
+        }
+    };
 
     foreach my $t ( reverse @$tweets ) {
         my $text = decode_entities( $t->{text} );
-	$text = "[%B\@$t->{user}->{name}%n] $text\n";
-	chomp $text;
-	$window->print( $text, MSGLEVEL_PUBLIC );
+        $text = "[%B\@$t->{user}->{name}%n] $text\n";
+        chomp $text;
+        $window->print( $text, MSGLEVEL_PUBLIC );
     }
 }
 
