@@ -641,8 +641,7 @@ sub do_updates {
 
     foreach my $t ( reverse @$tweets ) {
         my $text = decode_entities( $t->{text} );
-        $text =~ s/%/%%/g;
-        $text =~ s/(^|\W)\@([-\w]+)/$1%B\@$2%n/g;
+        $text =~ s/(^|\W)\@([-\w]+)/$1\cC12\@$2\cC/g;
         $text =~ s/[\n\r]/ /g;
         my $reply = "tweet";
         if (    Irssi::settings_get_bool("show_reply_context")
@@ -658,8 +657,7 @@ sub do_updates {
 
             if ($context) {
                 my $ctext = decode_entities( $context->{text} );
-                $ctext =~ s/%/%%/g;
-                $ctext =~ s/(^|\W)\@([-\w]+)/$1%B\@$2%n/g;
+                $ctext =~ s/(^|\W)\@([-\w]+)/$1\cC12\@$2\cC/g;
                 $ctext =~ s/[\n\r]/ /g;
                 printf $fh "id:%d account:%s nick:%s type:tweet %s\n",
                   $context->{id}, $username,
@@ -696,8 +694,7 @@ sub do_updates {
           if exists $friends{ $t->{user}{screen_name} };
 
         my $text = decode_entities( $t->{text} );
-        $text =~ s/%/%%/g;
-        $text =~ s/(^|\W)\@([-\w]+)/$1%B\@$2%n/g;
+        $text =~ s/(^|\W)\@([-\w]+)/$1\cC12\@$2\cC/g;
         $text =~ s/[\n\r]/ /g;
         printf $fh "id:%d account:%s nick:%s type:tweet %s\n",
           $t->{id}, $username, $t->{user}{screen_name}, $text;
@@ -717,8 +714,7 @@ sub do_updates {
 
     foreach my $t ( reverse @$tweets ) {
         my $text = decode_entities( $t->{text} );
-        $text =~ s/%/%%/g;
-        $text =~ s/(^|\W)\@([-\w]+)/$1%B\@$2%n/g;
+        $text =~ s/(^|\W)\@([-\w]+)/$1\cC12\@$2\cC/g;
         $text =~ s/[\n\r]/ /g;
         printf $fh "id:%d account:%s nick:%s type:dm %s\n",
           $t->{id}, $username, $t->{sender_screen_name}, $text;
@@ -768,13 +764,16 @@ sub monitor_child {
             }
 
             if ( $meta{type} eq 'tweet' ) {
-                push @lines, "[$account%B\@$meta{nick}%n$marker] $_\n",;
+                $window->printformat(MSGLEVEL_PUBLIC, 'twirssi_tweet',
+                  $account, $meta{nick}, $marker, $_);
             } elsif ( $meta{type} eq 'reply' ) {
-                push @lines, "[$account\\--> %B\@$meta{nick}%n$marker] $_\n",;
+                $window->printformat(MSGLEVEL_PUBLIC, 'twirssi_reply',
+                  $account, $meta{nick}, $marker, $_);
             } elsif ( $meta{type} eq 'dm' ) {
-                push @lines, "[$account%B\@$meta{nick}%n (%WDM%n)] $_\n",;
+                $window->printformat(MSGLEVEL_PUBLIC, 'twirssi_dm',
+                  $account, $meta{nick}, $_);
             } elsif ( $meta{type} eq 'error' ) {
-                push @lines, "ERROR: $_\n";
+                $window->print("ERROR: $_", MSGLEVEL_PUBLIC);
             } elsif ( $meta{type} eq 'debug' ) {
                 print "$_" if &debug,;
             } else {
@@ -794,13 +793,6 @@ sub monitor_child {
 
         if ($new_last_poll) {
             print "new last_poll = $new_last_poll" if &debug;
-            foreach my $line (@lines) {
-                chomp $line;
-                $window->print( $line, MSGLEVEL_PUBLIC );
-                foreach ( $line =~ /\@([-\w]+)/ ) {
-                    $nicks{$1} = time;
-                }
-            }
 
             close FILE;
             unlink $filename
@@ -927,6 +919,26 @@ sub sig_complete {
     }
 }
 
+sub event_send_text {
+    my ( $line, $server, $win ) = @_;
+    my $awin = Irssi::active_win();
+
+    # if the window where we got our text was the twitter window, and the user
+    # wants to be lazy, tweet away!
+    if ( ($awin->get_active_name() eq $window->{name})
+         and Irssi::settings_get_bool("tweet_window_input") ) {
+        &cmd_tweet($line, $server, $win);
+    }
+}
+
+Irssi::signal_add( "send text", "event_send_text" );
+
+Irssi::theme_register([
+    'twirssi_tweet', '[$0%B@$1%n$2] $3',
+    'twirssi_reply', '[$0\--> %B@$1%n$2] $3',
+    'twirssi_dm',    '[$0%B@$1%n (%WDM%n)] $2',
+]);
+
 Irssi::settings_add_str( "twirssi", "twitter_window",     "twitter" );
 Irssi::settings_add_str( "twirssi", "bitlbee_server",     "bitlbee" );
 Irssi::settings_add_str( "twirssi", "short_url_provider", "TinyURL" );
@@ -943,6 +955,7 @@ Irssi::settings_add_bool( "twirssi", "twirssi_debug",             0 );
 Irssi::settings_add_bool( "twirssi", "twirssi_first_run",         1 );
 Irssi::settings_add_bool( "twirssi", "twirssi_track_replies",     1 );
 Irssi::settings_add_bool( "twirssi", "twirssi_use_reply_aliases", 0 );
+Irssi::settings_add_bool( "twirssi", "tweet_window_input",        0 );
 $window = Irssi::window_find_name( Irssi::settings_get_str('twitter_window') );
 
 if ($window) {
