@@ -265,9 +265,9 @@ sub cmd_timeline {
 
     foreach my $t ( reverse @$tweets ) {
         my $text = decode_entities( $t->{text} );
-        $text = "[%B\@$t->{user}->{screen_name}%n] $text\n";
+        $text =~ s/(^|\W)\@([-\w]+)/$1\cC12\@$2\cC/g;
         chomp $text;
-        $window->print( $text, MSGLEVEL_PUBLIC );
+        $window->printformat(MSGLEVEL_PUBLIC, 'twirssi_timeline', $t->{user}->{screen_name}, $text);
     }
 }
 
@@ -939,6 +939,7 @@ Irssi::signal_add( "send text", "event_send_text" );
 
 Irssi::theme_register([
     'twirssi_tweet', '[$0%B@$1%n$2] $3',
+    'twirssi_timeline', '[%B@$0%n] $1',
     'twirssi_reply', '[$0\--> %B@$1%n$2] $3',
     'twirssi_dm',    '[$0%B@$1%n (%WDM%n)] $2',
 ]);
