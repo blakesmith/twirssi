@@ -6,20 +6,13 @@ use HTML::Entities;
 use File::Temp;
 use LWP::Simple;
 use Data::Dumper;
+use Net::Twitter;
 $Data::Dumper::Indent = 1;
-
-BEGIN {
-    $ENV{JSON_ANY_ORDER} = "JSON Syck DWIW";
-    require JSON::Any;
-    import JSON::Any;
-    require Net::Twitter;
-    import Net::Twitter;
-}
 
 use vars qw($VERSION %IRSSI);
 
-$VERSION = "1.7.3";
-my ($REV) = '$Rev: 354 $' =~ /(\d+)/;
+$VERSION = "1.7.7";
+my ($REV) = '$Rev: 422 $' =~ /(\d+)/;
 %IRSSI = (
     authors     => 'Dan Boger',
     contact     => 'zigdon@gmail.com',
@@ -28,7 +21,7 @@ my ($REV) = '$Rev: 354 $' =~ /(\d+)/;
       . 'Can optionally set your bitlbee /away message to same',
     license => 'GNU GPL v2',
     url     => 'http://tinyurl.com/twirssi',
-    changed => '$Date: 2009-01-08 14:46:04 -0800 (Thu, 08 Jan 2009) $',
+    changed => '$Date: 2009-01-26 08:19:42 -0800 (Mon, 26 Jan 2009) $',
 );
 
 my $window;
@@ -116,7 +109,7 @@ sub cmd_tweet_as {
 
     return unless &valid_username($username);
 
-    if ( Irssi::settings_get_str("short_url_provider") ) {
+    if ( &too_long($data) and Irssi::settings_get_str("short_url_provider") ) {
         foreach my $url ( $data =~ /(https?:\/\/\S+[\w\/])/g ) {
             eval {
                 my $short = makeashorterlink($url);
@@ -262,17 +255,19 @@ sub cmd_timeline {
     }
     my $tweets;
 
-    $tweets = $twit->user_timeline({id => $data});
-    unless ($tweets) {
-	    &notice("Unable to access $data" . "'s timeline.");
-	    return;
-    }
+    eval {
+        $tweets = $twit->user_timeline({id => $data});
+        unless ($tweets) {
+            &notice("Unable to access $data" . "'s timeline.");
+            return;
+        }
+    };
 
     foreach my $t ( reverse @$tweets ) {
         my $text = decode_entities( $t->{text} );
-	$text = "[%B\@$t->{user}->{name}%n] $text\n";
-	chomp $text;
-	$window->print( $text, MSGLEVEL_PUBLIC );
+        $text = "[%B\@$t->{user}->{screen_name}%n] $text\n";
+        chomp $text;
+        $window->print( $text, MSGLEVEL_PUBLIC );
     }
 }
 
@@ -630,8 +625,11 @@ sub do_updates {
 
     unless ( ref $tweets ) {
         if ( $obj->can("get_error") ) {
+            my $error;
+            eval { $error = JSON::Any->jsonToObj( $obj->get_error() ) };
+            if ($@) { $error = $obj->get_error() }
             print $fh "type:debug API Error during friends_timeline call: ",
-              JSON::Any->jsonToObj( $obj->get_error() ), "  Aborted.\n";
+              "$error  Aborted.\n";
         } else {
             print $fh
               "type:debug API Error during friends_timeline call. Aborted.\n";
@@ -864,11 +862,12 @@ sub update_away {
 }
 
 sub too_long {
-    my $data = shift;
+    my $data    = shift;
+    my $noalert = shift;
 
     if ( length $data > 140 ) {
-        &notice(
-            "Tweet too long (" . length($data) . " characters) - aborted" );
+        &notice( "Tweet too long (" . length($data) . " characters) - aborted" )
+          unless $noalert;
         return 1;
     }
 
@@ -905,14 +904,19 @@ sub sig_complete {
             and $linestart =~ /^\/reply(?:_as)?\s*$/ )
       )
     {    # /twitter_reply gets a nick:num
-        @$complist = grep /^\Q$word/i, sort keys %{ $id_map{__indexes} };
+        $word =~ s/^@//;
+        @$complist = map { "$_:$id_map{__indexes}{$_}" } grep /^\Q$word/i,
+          sort keys %{ $id_map{__indexes} };
     }
 
     # /tweet, /tweet_as, /dm, /dm_as - complete @nicks (and nicks as the first
     # arg to dm)
-    if ( $linestart =~ /^\/(?:tweet|dm)/ ) {
+    if ( $linestart =~ /^\/(?:tweet|dm|twitter_timeline)/ ) {
         my $prefix = $word =~ s/^@//;
-        $prefix = 0 if $linestart eq '/dm' or $linestart eq '/dm_as';
+        my @strip_linestarts = ('/dm', '/dm_as', '/twitter_timeline'); #commands that need the @ stripped out.
+        foreach ( @strip_linestarts ) {
+            $prefix = 0 if $linestart eq $_;
+        }
         push @$complist, grep /^\Q$word/i,
           sort { $nicks{$b} <=> $nicks{$a} } keys %nicks;
         @$complist = map { "\@$_" } @$complist if $prefix;
@@ -956,7 +960,14 @@ Irssi::settings_add_bool( "twirssi", "twirssi_first_run",         1 );
 Irssi::settings_add_bool( "twirssi", "twirssi_track_replies",     1 );
 Irssi::settings_add_bool( "twirssi", "twirssi_use_reply_aliases", 0 );
 Irssi::settings_add_bool( "twirssi", "tweet_window_input",        0 );
+
 $window = Irssi::window_find_name( Irssi::settings_get_str('twitter_window') );
+if ( !$window ) {
+    $window =
+      Irssi::Windowitem::window_create(
+        Irssi::settings_get_str('twitter_window'), 1 );
+    $window->set_name( Irssi::settings_get_str('twitter_window') );
+}
 
 if ($window) {
     Irssi::command_bind( "dm",               "cmd_direct" );
