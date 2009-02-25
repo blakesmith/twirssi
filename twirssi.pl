@@ -11,8 +11,8 @@ $Data::Dumper::Indent = 1;
 
 use vars qw($VERSION %IRSSI);
 
-$VERSION = "2.0.5";
-my ($REV) = '$Rev: 480 $' =~ /(\d+)/;
+$VERSION = "2.1.0";
+my ($REV) = '$Rev: 489 $' =~ /(\d+)/;
 %IRSSI = (
     authors     => 'Dan Boger',
     contact     => 'zigdon@gmail.com',
@@ -21,7 +21,7 @@ my ($REV) = '$Rev: 480 $' =~ /(\d+)/;
       . 'Can optionally set your bitlbee /away message to same',
     license => 'GNU GPL v2',
     url     => 'http://twirssi.com',
-    changed => '$Date: 2009-02-18 13:41:52 -0800 (Wed, 18 Feb 2009) $',
+    changed => '$Date: 2009-02-24 17:04:58 -0800 (Tue, 24 Feb 2009) $',
 );
 
 my $window;
@@ -34,6 +34,7 @@ my %nicks;
 my %friends;
 my %tweet_cache;
 my %id_map;
+my $failwhale            = 0;
 my %irssi_to_mirc_colors = (
     '%k' => '01',
     '%r' => '05',
@@ -81,20 +82,25 @@ sub cmd_direct_as {
     return unless &valid_username($username);
 
     eval {
-        unless ( $twits{$username}
+        if ( $twits{$username}
             ->new_direct_message( { user => $target, text => $text } ) )
         {
+            &notice("DM sent to $target");
+            $nicks{$target} = time;
+        } else {
+            my $error;
+            eval {
+                $error = JSON::Any->jsonToObj( $twits{$username}->get_error() );
+                $error = $error->{error};
+            };
+            die $error if $error;
             &notice("DM to $target failed");
-            return;
         }
     };
 
     if ($@) {
-        &notice("DM caused an error: $@.  Aborted");
+        &notice("DM caused an error: $@");
         return;
-    } else {
-        &notice("DM sent to $target");
-        $nicks{$target} = time;
     }
 }
 
@@ -141,16 +147,18 @@ sub cmd_tweet_as {
 
     return if &too_long($data);
 
+    my $success = 1;
     eval {
         unless ( $twits{$username}->update($data) )
         {
             &notice("Update failed");
-            return;
+            $success = 0;
         }
     };
+    return unless $success;
 
     if ($@) {
-        &notice("Update caused an error.  Aborted.");
+        &notice("Update caused an error: $@.  Aborted.");
         return;
     }
 
@@ -227,17 +235,20 @@ sub cmd_reply_as {
         $data = "\@$nick " . $data;
     }
 
-    if ( Irssi::settings_get_str("short_url_provider") ) {
-        foreach my $url ( $data =~ /(https?:\/\/\S+[\w\/])/g ) {
-            eval {
-                my $short = makeashorterlink($url);
-                $data =~ s/\Q$url/$short/g;
-            };
+    if ( &too_long( $data, 1 ) ) {
+        if ( Irssi::settings_get_str("short_url_provider") ) {
+            foreach my $url ( $data =~ /(https?:\/\/\S+[\w\/])/g ) {
+                eval {
+                    my $short = makeashorterlink($url);
+                    $data =~ s/\Q$url/$short/g;
+                };
+            }
         }
     }
 
     return if &too_long($data);
 
+    my $success = 1;
     eval {
         unless (
             $twits{$username}->update(
@@ -249,12 +260,13 @@ sub cmd_reply_as {
           )
         {
             &notice("Update failed");
-            return;
+            $success = 0;
         }
     };
+    return unless $success;
 
     if ($@) {
-        &notice("Update caused an error.  Aborted");
+        &notice("Update caused an error: $@.  Aborted");
         return;
     }
 
@@ -309,13 +321,15 @@ sub gen_cmd {
             return;
         }
 
+        my $success = 1;
         eval {
             unless ( $twit->$api_name($data) )
             {
                 &notice("$api_name failed");
-                return;
+                $success = 0;
             }
         };
+        return unless $success;
 
         if ($@) {
             &notice("$api_name caused an error.  Aborted.");
@@ -430,7 +444,7 @@ sub cmd_login {
         }
         %nicks = %friends;
         $nicks{$user} = 0;
-        &get_updates;
+        return 1;
     } else {
         &notice("Login failed");
     }
@@ -514,13 +528,6 @@ sub cmd_upgrade {
     unless ( -w $loc ) {
         &notice(
 "$loc isn't writable, can't upgrade.  Perhaps you need to /set twirssi_location?"
-        );
-        return;
-    }
-
-    if ( not -x "/usr/bin/md5sum" and not $data ) {
-        &notice(
-"/usr/bin/md5sum can't be found - try '/twirssi_upgrade nomd5' to skip MD5 verification"
         );
         return;
     }
@@ -656,6 +663,7 @@ sub get_updates {
     return unless &logged_in($twit);
 
     my ( $fh, $filename ) = File::Temp::tempfile();
+    binmode( $fh, ":utf8" );
     my $pid = fork();
 
     if ($pid) {    # parent
@@ -711,13 +719,11 @@ sub do_updates {
 
     print scalar localtime, " - Polling for updates for $username" if &debug;
     my $tweets;
-    eval {
-        $tweets = $obj->friends_timeline(
-            { since => HTTP::Date::time2str($last_poll) } );
-    };
+    eval { $tweets = $obj->friends_timeline(); };
 
     if ($@) {
-        print $fh "type:debug Error during friends_timeline call.  Aborted.\n";
+        print $fh
+          "type:debug Error during friends_timeline call: $@.  Aborted.\n";
         return 1;
     }
 
@@ -866,8 +872,15 @@ sub monitor_child {
     print scalar localtime, " - checking child log at $filename ($attempt)"
       if &debug;
     my $new_last_poll;
+
+    # first time we run we don't want to print out *everything*, so we just
+    # pretend
+    my $suppress = 0;
+    $suppress = 1 unless keys %tweet_cache;
+
     if ( open FILE, $filename ) {
         my @lines;
+        my %new_cache;
         while (<FILE>) {
             chomp;
             last if /^__friends__/;
@@ -880,8 +893,11 @@ sub monitor_child {
             }
 
             if ( not $meta{type} or $meta{type} ne 'searchid' ) {
-                next if exists $meta{id} and exists $tweet_cache{ $meta{id} };
-                $tweet_cache{ $meta{id} } = time;
+                $new_cache{ $meta{id} } = time;
+
+                if ( exists $meta{id} and exists $tweet_cache{ $meta{id} } ) {
+                    next;
+                }
             }
 
             my $account = "";
@@ -966,12 +982,16 @@ sub monitor_child {
 
         if ($new_last_poll) {
             print "new last_poll = $new_last_poll" if &debug;
-            for my $line (@lines) {
-                $window->printformat(
-                    $line->[0],
-                    "twirssi_" . $line->[1],
-                    @$line[ 2 .. $#$line ]
-                );
+            if ($suppress) {
+                print "First call, not printing updates" if &debug;
+            } else {
+                foreach my $line (@lines) {
+                    $window->printformat(
+                        $line->[0],
+                        "twirssi_" . $line->[1],
+                        @$line[ 2 .. $#$line ]
+                    );
+                }
             }
 
             close FILE;
@@ -979,9 +999,13 @@ sub monitor_child {
               or warn "Failed to remove $filename: $!"
               unless &debug;
 
+            # commit the pending cache lines to the actual cache, now that
+            # we've printed our output
+            %tweet_cache = ( %tweet_cache, %new_cache );
+
             # keep enough cached tweets, to make sure we don't show duplicates.
             foreach ( keys %tweet_cache ) {
-                next if $tweet_cache{$_} >= $last_poll;
+                next if $tweet_cache{$_} >= $last_poll - 3600;
                 delete $tweet_cache{$_};
             }
             $last_poll = $new_last_poll;
@@ -998,6 +1022,7 @@ sub monitor_child {
                     &notice("Failed to write replies to $file: $!");
                 }
             }
+            $failwhale = 0;
             return;
         }
     }
@@ -1019,6 +1044,23 @@ sub monitor_child {
             $since = sprintf( "%d:%02d", @time[ 2, 1 ] );
         } else {
             $since = scalar localtime($last_poll);
+        }
+
+        if ( not $failwhale and time - $last_poll > 60 * 60 ) {
+            foreach my $whale (
+                q{     v  v        v},
+                q{     |  |  v     |  v},
+                q{     | .-, |     |  |},
+                q{  .--./ /  |  _.---.| },
+                q{   '-. (__..-"       \\},
+                q{      \\          a    |},
+                q{       ',.__.   ,__.-'/},
+                q{         '--/_.'----'`}
+              )
+            {
+                &notice($whale);
+            }
+            $failwhale = 1;
         }
         &notice("Haven't been able to get updated tweets since $since");
     }
@@ -1227,6 +1269,11 @@ if ($window) {
             print "nicks: ",   join ", ", sort keys %nicks;
             print "searches: ", Dumper \%{ $id_map{__searches} };
             print "last poll: $last_poll";
+            if ( open DUMP, ">/tmp/twirssi.cache.txt" ) {
+                print DUMP Dumper \%tweet_cache;
+                close DUMP;
+                print "cache written out to /tmp/twirssi.cache.txt";
+            }
         }
     );
     Irssi::command_bind(
@@ -1295,6 +1342,7 @@ if ($window) {
         and my $autopass = Irssi::settings_get_str("twitter_passwords") )
     {
         &cmd_login();
+        &get_updates;
     }
 
 } else {
