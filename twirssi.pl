@@ -359,6 +359,34 @@ sub cmd_reply_as {
     &notice( "Update sent" . ( $away ? " (and away msg set)" : "" ) );
 }
 
+sub cmd_timeline {
+    my ( $data, $server, $win ) = @_;
+
+    return unless &logged_in($twit);
+
+    $data =~ s/^\s+|\s+$//;
+    unless ($data) {
+        &notice("Usage: /twitter_timeline <nick>");
+        return;
+    }
+    my $tweets;
+
+    eval {
+        $tweets = $twit->user_timeline({id => $data});
+        unless ($tweets) {
+            &notice("Unable to access $data" . "'s timeline.");
+            return;
+        }
+    };
+
+    foreach my $t ( reverse @$tweets ) {
+        my $text = decode_entities( $t->{text} );
+        $text =~ s/(^|\W)\@([-\w]+)/$1\cC12\@$2\cC/g;
+        chomp $text;
+        $window->printformat(MSGLEVEL_PUBLIC, 'twirssi_timeline', $t->{user}->{screen_name}, $text);
+    }
+}
+
 sub gen_cmd {
     my ( $usage_str, $api_name, $post_ref ) = @_;
 
@@ -1312,9 +1340,12 @@ sub sig_complete {
 
     # /tweet, /tweet_as, /dm, /dm_as - complete @nicks (and nicks as the first
     # arg to dm)
-    if ( $linestart =~ /^\/(?:tweet|dm)/ ) {
+    if ( $linestart =~ /^\/(?:tweet|dm|twitter_timeline)/ ) {
         my $prefix = $word =~ s/^@//;
-        $prefix = 0 if $linestart eq '/dm' or $linestart eq '/dm_as';
+        my @strip_linestarts = ('/dm', '/dm_as', '/twitter_timeline'); #commands that need the @ stripped out.
+        foreach ( @strip_linestarts ) {
+            $prefix = 0 if $linestart eq $_;
+        }
         push @$complist, grep /^\Q$word/i,
           sort { $nicks{$b} <=> $nicks{$a} } keys %nicks;
         @$complist = map { "\@$_" } @$complist if $prefix;
@@ -1432,6 +1463,7 @@ Irssi::theme_register(
     [
         'twirssi_tweet',  '[$0%B@$1%n$2] $3',
         'twirssi_search', '[$0%r$1%n:%B@$2%n$3] $4',
+        'twirssi_timeline', '[%B@$0%n] $1',
         'twirssi_reply',  '[$0\--> %B@$1%n$2] $3',
         'twirssi_dm',     '[$0%r@$1%n (%WDM%n)] $2',
         'twirssi_error',  'ERROR: $0',
@@ -1490,6 +1522,7 @@ if ($window) {
     Irssi::command_bind( "retweet_as",                 "cmd_retweet_as" );
     Irssi::command_bind( "twitter_reply",              "cmd_reply" );
     Irssi::command_bind( "twitter_reply_as",           "cmd_reply_as" );
+    Irssi::command_bind( "twitter_timeline",           "cmd_timeline" );
     Irssi::command_bind( "twitter_login",              "cmd_login" );
     Irssi::command_bind( "twitter_logout",             "cmd_logout" );
     Irssi::command_bind( "twitter_switch",             "cmd_switch" );
