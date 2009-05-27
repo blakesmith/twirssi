@@ -10,8 +10,8 @@ $Data::Dumper::Indent = 1;
 
 use vars qw($VERSION %IRSSI);
 
-$VERSION = "2.2.1";
-my ($REV) = '$Rev: 611 $' =~ /(\d+)/;
+$VERSION = "2.2.3";
+my ($REV) = '$Rev: 643 $' =~ /(\d+)/;
 %IRSSI = (
     authors     => 'Dan Boger',
     contact     => 'zigdon@gmail.com',
@@ -20,7 +20,7 @@ my ($REV) = '$Rev: 611 $' =~ /(\d+)/;
       . 'Can optionally set your bitlbee /away message to same',
     license => 'GNU GPL v2',
     url     => 'http://twirssi.com',
-    changed => '$Date: 2009-04-10 23:47:19 -0700 (Fri, 10 Apr 2009) $',
+    changed => '$Date: 2009-05-21 14:13:27 -0700 (Thu, 21 May 2009) $',
 );
 
 my $window;
@@ -30,11 +30,14 @@ my $user;
 my $defservice;
 my $poll;
 my $last_poll;
+my $last_friends_poll = 0;
 my %nicks;
 my %friends;
 my %tweet_cache;
 my %id_map;
-my $failwhale            = 0;
+my $failwhale  = 0;
+my $first_call = 1;
+
 my %irssi_to_mirc_colors = (
     '%k' => '01',
     '%r' => '05',
@@ -180,7 +183,7 @@ sub cmd_retweet_as {
             $twits{$username}->update(
                 {
                     status                => $data,
-                    in_reply_to_status_id => $id_map{ lc $nick }[$id]
+                    # in_reply_to_status_id => $id_map{ lc $nick }[$id]
                 }
             )
           )
@@ -580,12 +583,12 @@ sub cmd_add_search {
         return;
     }
 
-    if ( exists $id_map{__searches}{$user}{$data} ) {
+    if ( exists $id_map{__searches}{"$user\@$defservice"}{$data} ) {
         &notice("Already had a subscription for '$data'");
         return;
     }
 
-    $id_map{__searches}{$user}{$data} = 1;
+    $id_map{__searches}{"$user\@$defservice"}{$data} = 1;
     &notice("Added subscription for '$data'");
 }
 
@@ -605,12 +608,12 @@ sub cmd_del_search {
         return;
     }
 
-    unless ( exists $id_map{__searches}{$user}{$data} ) {
+    unless ( exists $id_map{__searches}{"$user\@$defservice"}{$data} ) {
         &notice("No subscription found for '$data'");
         return;
     }
 
-    delete $id_map{__searches}{$user}{$data};
+    delete $id_map{__searches}{"$user\@$defservice"}{$data};
     &notice("Removed subscription for '$data'");
 }
 
@@ -798,15 +801,22 @@ sub get_updates {
             $error++ unless &do_updates( $fh, $_, $twits{$_}, \%context_cache );
         }
 
-        my ( $added, $removed ) = &load_friends($fh);
-        if ( $added + $removed ) {
-            print $fh "type:debug %R***%n Friends list updated: ",
-              join( ", ",
-                sprintf( "%d added",   $added ),
-                sprintf( "%d removed", $removed ) ),
-              "\n";
-        }
         print $fh "__friends__\n";
+        if (
+            time - $last_friends_poll >
+            Irssi::settings_get_int('twitter_friends_poll') )
+        {
+            print $fh "__updated ", time, "\n";
+            my ( $added, $removed ) = &load_friends($fh);
+            if ( $added + $removed ) {
+                print $fh "type:debug %R***%n Friends list updated: ",
+                  join( ", ",
+                    sprintf( "%d added",   $added ),
+                    sprintf( "%d removed", $removed ) ),
+                  "\n";
+            }
+        }
+
         foreach ( sort keys %friends ) {
             print $fh "$_ $friends{$_}\n";
         }
@@ -819,6 +829,8 @@ sub get_updates {
         }
         close $fh;
         exit;
+    } else {
+        &ccrap("Failed to fork for updating: $!");
     }
     print scalar localtime, " - get_updates ends" if &debug;
 }
@@ -1034,15 +1046,17 @@ sub monitor_child {
 
     # first time we run we don't want to print out *everything*, so we just
     # pretend
-    my $suppress = 0;
-    $suppress = 1 unless keys %tweet_cache;
 
     if ( open FILE, $filename ) {
         my @lines;
         my %new_cache;
         while (<FILE>) {
-            chomp;
             last if /^__friends__/;
+            unless (/\n$/) {    # skip partial lines
+                                # print "Skipping partial line: $_" if &debug;
+                next;
+            }
+            chomp;
             my $hilight = 0;
             my %meta;
 
@@ -1093,8 +1107,7 @@ sub monitor_child {
 
             my $hilight_color =
               $irssi_to_mirc_colors{ Irssi::settings_get_str("hilight_color") };
-            my $nick =
-              '@' . substr( $meta{account}, 0, index( $meta{account}, "@" ) );
+            my $nick = "\@$meta{account}";
             if ( $_ =~ /\Q$nick\E(?:\W|$)/i
                 and Irssi::settings_get_bool("twirssi_hilights") )
             {
@@ -1132,8 +1145,9 @@ sub monitor_child {
             } elsif ( $meta{type} eq 'searchid' ) {
                 print "Search '$meta{topic}' returned id $meta{id}" if &debug;
                 if (
+                    not
                     exists $id_map{__searches}{ $meta{account} }{ $meta{topic} }
-                    and $meta{id} >=
+                    or $meta{id} >=
                     $id_map{__searches}{ $meta{account} }{ $meta{topic} } )
                 {
                     $id_map{__searches}{ $meta{account} }{ $meta{topic} } =
@@ -1157,6 +1171,12 @@ sub monitor_child {
 
         %friends = ();
         while (<FILE>) {
+            if (/^__updated (\d+)$/) {
+                $last_friends_poll = $1;
+                print "Friend list updated" if &debug;
+                next;
+            }
+
             if (/^-- (\d+)$/) {
                 ($new_last_poll) = ($1);
                 last;
@@ -1168,7 +1188,7 @@ sub monitor_child {
         if ($new_last_poll) {
             print "new last_poll    = $new_last_poll" if &debug;
             print "new last_poll_id = ", Dumper( $id_map{__last_id} ) if &debug;
-            if ($suppress) {
+            if ($first_call) {
                 print "First call, not printing updates" if &debug;
             } else {
                 foreach my $line (@lines) {
@@ -1208,7 +1228,8 @@ sub monitor_child {
                     &ccrap("Failed to write replies to $file: $!");
                 }
             }
-            $failwhale = 0;
+            $failwhale  = 0;
+            $first_call = 0;
             return;
         }
     }
@@ -1248,7 +1269,10 @@ sub monitor_child {
             }
             $failwhale = 1;
         }
-        &ccrap("Haven't been able to get updated tweets since $since");
+
+        if ( time - $last_poll < 600 ) {
+            &ccrap("Haven't been able to get updated tweets since $since");
+        }
     }
 }
 
@@ -1336,6 +1360,13 @@ sub sig_complete {
           sort { $nicks{$b} <=> $nicks{$a} }
           grep /^\Q$word/i,
           keys %{ $id_map{__indexes} };
+    }
+
+    if ( $linestart =~ /^\/twitter_unfriend\s*$/ )
+    {    # /twitter_unfriend gets a nick
+        $word =~ s/^@//;
+        push @$complist, grep /^\Q$word/i,
+          sort { $nicks{$b} <=> $nicks{$a} } keys %nicks;
     }
 
     # /tweet, /tweet_as, /dm, /dm_as - complete @nicks (and nicks as the first
@@ -1486,6 +1517,9 @@ Irssi::settings_add_str( "twirssi", "twirssi_location",
     ".irssi/scripts/twirssi.pl" );
 Irssi::settings_add_str( "twirssi", "twirssi_replies_store",
     ".irssi/scripts/twirssi.json" );
+
+Irssi::settings_add_int( "twirssi", "twitter_friends_poll", 600 );
+
 Irssi::settings_add_bool( "twirssi", "twirssi_upgrade_beta",      0 );
 Irssi::settings_add_bool( "twirssi", "tweet_to_away",             0 );
 Irssi::settings_add_bool( "twirssi", "show_reply_context",        0 );
